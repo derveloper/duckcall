@@ -1,11 +1,11 @@
 # duckcall
 
-Diktieren, ohne dass der Call mitredet. Solange [Handy](https://github.com/cjpais/Handy) aufnimmt (⌥Space halten),
+Dictate without the call talking over you. While [Handy](https://github.com/cjpais/Handy) records (hold ⌥Space),
 
-- schaltet die Call-App (Fluxer oder Discord) dein Mikro stumm, über ihr eigenes „Push to mute“ auf derselben Taste,
-- senkt duckcall die Systemlautstärke auf 5 und stellt sie danach wieder her.
+- the call app (Fluxer or Discord) mutes your microphone through its own "push to mute" on the same key,
+- duckcall lowers the system volume to 5 and restores it afterwards.
 
-Bisher nur macOS, Linux ist geplant.
+macOS only so far; Linux is planned.
 
 ## Installation
 
@@ -15,49 +15,52 @@ cargo install --path duckcall --root ~/.local
 duckcall install
 ```
 
-`--root ~/.local` legt das Binary nach `~/.local/bin`. `duckcall install` richtet dann alles ein:
+`--root ~/.local` puts the binary into `~/.local/bin`. `duckcall install` then sets everything up:
 
-| Was | Wo | Warum |
+| What | Where | Why |
 |---|---|---|
-| Handy: `keyboard_implementation = tauri` | `settings_store.json` | Handys Standard (`handy_keys`) schluckt den Tastendruck, Fluxer sähe ihn nie. |
-| Handy: `log_level = debug` | `settings_store.json` | duckcall erkennt Aufnahmestart und -ende an Handys DEBUG-Logzeilen. |
-| Fluxer: „Push to mute“ auf ⌥Space | `desktop-app-store.sqlite3` | Mikro stumm, solange die Taste gehalten wird. |
-| Discord: „Push to Mute“ auf ⌥Space | localStorage (LevelDB) | Wie bei Fluxer. Vorher wird der Stand nach `leveldb.duckcall-backup` kopiert. |
-| Hintergrunddienst | LaunchAgent `io.github.lansidev.duckcall` | Startet `duckcall run` beim Login. |
+| Handy: `keyboard_implementation = tauri` | `settings_store.json` | Handy's default (`handy_keys`) swallows the key press, so Fluxer would never see it. |
+| Handy: `log_level = debug` | `settings_store.json` | duckcall detects the start and end of a recording from Handy's DEBUG log lines. |
+| Fluxer: "Push to mute" on ⌥Space | `desktop-app-store.sqlite3` | Mutes the microphone while the key is held. |
+| Discord: "Push to Mute" on ⌥Space | localStorage (LevelDB) | Same as Fluxer. The previous state is copied to `leveldb.duckcall-backup` first. |
+| Background service | LaunchAgent `io.github.lansidev.duckcall` | Starts `duckcall run` at login. |
 
-Schon passende Einstellungen bleiben unberührt. Läuft eine App, deren Einstellungen sich ändern
-müssen, fragt duckcall, ob es sie neu starten darf – das beendet laufende Calls. `--yes` startet
-ohne Nachfrage neu; ohne Terminal und ohne `--yes` wird die App übersprungen.
+Settings that already match are left alone. If an app whose settings have to change is running,
+duckcall asks before restarting it, because a restart ends active calls. `--yes` restarts without
+asking; without a terminal and without `--yes` the app is skipped.
 
-Voraussetzungen:
+Requirements:
 
-- Handy, Fluxer und Discord müssen je einmal gestartet worden sein. Fehlt eine Call-App, wird sie übersprungen.
-- Fluxer und Discord brauchen die macOS-Berechtigung „Eingabeüberwachung“, sonst sehen sie Tasten nur im eigenen Fenster.
-- „Push to mute“ wirkt in beiden Apps nur im Modus Sprachaktivierung, nicht bei Push-to-talk.
+- Handy, Fluxer and Discord must each have been started once. A call app that is missing is skipped.
+- Fluxer and Discord need the macOS "Input Monitoring" permission; without it they only see keys in their own window.
+- In both apps "push to mute" only works in voice-activity mode, not with push-to-talk.
 
-## Einstellen und entfernen
-
-```sh
-DUCK_VOLUME=10 duckcall install   # andere Lautstärke beim Diktieren (0–100, Standard 5)
-duckcall uninstall                # Dienst entfernen, Handy zurück auf handy_keys
-```
-
-Die Push-to-mute-Kürzel in Fluxer und Discord bleiben nach `uninstall` bestehen.
-
-## Grenzen
-
-- Gedrosselt wird die gesamte Systemausgabe, nicht nur die Call-App. Pro-App-Lautstärke bräuchte
-  auf macOS einen Core-Audio-Process-Tap mit Audio-Capture-Berechtigung.
-- Ausgabegeräte ohne Lautstärkeregler (HDMI) bleiben unverändert.
-- Automatisch eingerichtet wird nur Handys Standardkürzel `option+space`. Bei einem anderen Kürzel
-  stellt `install` nur Handy um; „Push to mute“ musst du dann selbst darauf legen.
-- Fluxer und Discord dokumentieren ihre Einstellungsspeicher nicht. Ändert ein Update das Format,
-  meldet `install` einen Fehler oder die App ignoriert den Eintrag.
-- Ändert Handy den Wortlaut seiner Logzeilen (`TranscribeAction::start called` / `stop called`),
-  greift die Drosselung nicht mehr.
-
-## Entwicklung
+## Configure and remove
 
 ```sh
-cargo test
+DUCK_VOLUME=10 duckcall install   # another volume while dictating (0-100, default 5)
+duckcall uninstall                # remove the service, set Handy back to handy_keys
 ```
+
+The push-to-mute shortcuts in Fluxer and Discord stay after `uninstall`.
+
+## Limits
+
+- The whole system output is ducked, not only the call app. Per-app volume on macOS would need a
+  Core Audio process tap with the audio-capture permission.
+- Outputs without a volume control (HDMI) are left unchanged.
+- Only Handy's default shortcut `option+space` is set up automatically. With another shortcut,
+  `install` only changes Handy; you have to bind "push to mute" to it yourself.
+- Fluxer and Discord do not document their settings stores. If an update changes the format,
+  `install` reports an error or the app ignores the entry.
+- If Handy changes the wording of its log lines (`TranscribeAction::start called` / `stop called`),
+  the ducking stops working.
+
+## Development
+
+```sh
+cargo test                  # unit tests and end-to-end tests in a sandbox; the real apps and volume stay untouched
+cargo clippy --all-targets
+```
+
+[AGENTS.md](AGENTS.md) explains how the pieces fit together and what to watch out for.
