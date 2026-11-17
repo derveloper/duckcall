@@ -1,0 +1,12 @@
+[package]
+name = "duckcall"
+version = "0.1.0"
+edition = "2024"
+description = "Mutes you in the call and ducks the output volume while you dictate with Handy"
+repository = "https://github.com/lansidev/duckcall"
+
+[dependencies]
+libc = "0.2"
+rusqlite = { version = "0.43", features = ["bundled"] }
+rusty-leveldb = "4"
+serde_json = "1"
