@@ -115,15 +115,10 @@ fn service_stop() {
     }
 }
 
-/// Runs `duckcall run` at login and keeps it alive.
-pub fn service_install(level: u8) -> Result<()> {
-    let exe = std::env::current_exe()?.to_string_lossy().replace('&', "&amp;").replace('<', "&lt;");
-    let plist = plist();
-    fs::create_dir_all(home().join("Library/LaunchAgents"))?;
-    fs::write(
-        &plist,
-        format!(
-            r#"<?xml version="1.0" encoding="UTF-8"?>
+fn agent(exe: &str, level: u8) -> String {
+    let exe = exe.replace('&', "&amp;").replace('<', "&lt;");
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
@@ -146,8 +141,14 @@ pub fn service_install(level: u8) -> Result<()> {
 </dict>
 </plist>
 "#
-        ),
-    )?;
+    )
+}
+
+/// Runs `duckcall run` at login and keeps it alive.
+pub fn service_install(level: u8) -> Result<()> {
+    let plist = plist();
+    fs::create_dir_all(home().join("Library/LaunchAgents"))?;
+    fs::write(&plist, agent(&std::env::current_exe()?.to_string_lossy(), level))?;
     service_stop();
     if !launchctl(&["bootstrap", &domain(), &plist.to_string_lossy()]) {
         return Err("launchctl could not start the background service".into());
@@ -160,5 +161,30 @@ pub fn service_remove() -> Result<()> {
     match fs::remove_file(plist()) {
         Err(error) if error.kind() != ErrorKind::NotFound => Err(error.into()),
         _ => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn plutil(file: &str, key: &str) -> String {
+        let output = Command::new("/usr/bin/plutil").args(["-extract", key, "raw", "-o", "-", file]).output().unwrap();
+        assert!(output.status.success(), "plutil cannot read {key}: {}", String::from_utf8_lossy(&output.stderr));
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    #[test]
+    fn the_launch_agent_is_a_valid_plist_and_keeps_odd_paths_intact() {
+        let exe = "/Users/R&D <dev>/bin/duckcall";
+        let file = std::env::temp_dir().join("duckcall-test-agent.plist");
+        fs::write(&file, agent(exe, 7)).unwrap();
+        let file = file.to_string_lossy();
+
+        assert_eq!(plutil(&file, "ProgramArguments.0"), exe);
+        assert_eq!(plutil(&file, "ProgramArguments.1"), "run");
+        assert_eq!(plutil(&file, "EnvironmentVariables.DUCK_VOLUME"), "7");
+        assert_eq!(plutil(&file, "RunAtLoad"), "true");
+        assert_eq!(plutil(&file, "KeepAlive"), "true");
     }
 }
