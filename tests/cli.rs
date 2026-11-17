@@ -36,7 +36,10 @@ impl Sandbox {
         stand_in("launchctl", format!("{note}\n[ \"$1\" != print ]")); // no service is ever loaded
         stand_in("pgrep", r#"[ -e "$SANDBOX/running/$2" ]"#.to_string());
         stand_in("pkill", format!("{note}\n/bin/rm -f \"$SANDBOX/running/$2\"")); // the app quits at once
-        stand_in("open", note.to_string());
+        // `open -g -a App` starts an app. `open … --stderr FILE --args COMMAND` runs Duckcall.app, which
+        // writes to FILE when it fails.
+        let app = r#"while [ $# -gt 0 ]; do [ "$1" = --stderr ] && [ -e "$SANDBOX/app-fails" ] && echo "duckcall: Operation not permitted" > "$2"; shift; done"#;
+        stand_in("open", format!("{note}\n{app}"));
         stand_in("codesign", note.to_string());
         // Like the real osascript, only the script that asks for the volume prints something.
         let answer = r#"case "$*" in *"get volume settings"*) read -r volume < "$SANDBOX/volume"; echo "$volume" ;; esac"#;
@@ -50,13 +53,28 @@ impl Sandbox {
         self.root.join("home")
     }
 
-    fn agent(&self) -> PathBuf {
-        self.home().join("Library/LaunchAgents/io.github.lansidev.duckcall.plist")
+    /// Duckcall.app, in the sandbox's stand-in for /Applications.
+    fn bundle(&self) -> PathBuf {
+        self.root.join("Applications/Duckcall.app")
     }
 
-    /// The app bundle the service runs from.
-    fn bundle(&self) -> PathBuf {
-        self.home().join("Library/Application Support/duckcall/Duckcall.app")
+    /// The launch agent the app carries. Its file name is its label, which changes with the app.
+    fn agent(&self) -> PathBuf {
+        let agents = self.bundle().join("Contents/Library/LaunchAgents");
+        let mut files: Vec<PathBuf> = fs::read_dir(&agents).unwrap().map(|file| file.unwrap().path()).collect();
+        assert_eq!(files.len(), 1, "exactly one agent in {}", agents.display());
+        files.remove(0)
+    }
+
+    fn label(&self) -> String {
+        self.agent().file_stem().unwrap().to_string_lossy().into_owned()
+    }
+
+    /// Where in `calls` Duckcall.app was last run with the command, if it was.
+    fn app_ran(&self, command: &str) -> Option<usize> {
+        let start = format!("open -n -W -g -a {} --stderr ", self.bundle().display());
+        let end = format!(" --args {command}");
+        self.calls().iter().rposition(|call| call.starts_with(&start) && call.ends_with(&end))
     }
 
     fn store(&self, path: &str) -> PathBuf {
@@ -130,6 +148,7 @@ impl Sandbox {
             .env("HOME", self.home())
             .env("TMPDIR", self.root.join("tmp"))
             .env("SANDBOX", &self.root)
+            .env("DUCKCALL_APPLICATIONS", self.root.join("Applications"))
             .stdin(Stdio::null()); // no terminal: nobody can agree to a restart
         command
     }
@@ -207,10 +226,6 @@ impl Sandbox {
     }
 }
 
-fn service() -> String {
-    format!("gui/{}/io.github.lansidev.duckcall", unsafe { libc::getuid() })
-}
-
 /// One value of a property list, read by the real plutil.
 fn plist_value(file: &Path, key: &str) -> String {
     let output = Command::new("/usr/bin/plutil").args(["-extract", key, "raw", "-o", "-"]).arg(file).output().unwrap();
@@ -233,9 +248,7 @@ fn install_sets_up_a_fresh_machine_and_writes_nothing_the_second_time() {
     assert_eq!(sandbox.handy_setting("theme"), "system");
     assert_eq!(sandbox.fluxer_mutes(), 1);
     assert_eq!(sandbox.discord_mutes(), 1);
-    let bootstrap = format!("launchctl bootstrap gui/{} {}", unsafe { libc::getuid() }, sandbox.agent().display());
-    assert!(sandbox.calls().contains(&bootstrap), "{:?}", sandbox.calls());
-    assert!(sandbox.agent().is_file());
+    assert!(sandbox.app_ran("register").is_some(), "{:?}", sandbox.calls());
 
     let stores = sandbox.stores();
     let second = sandbox.duckcall(&["install"]);
@@ -254,7 +267,7 @@ fn install_stops_before_changing_anything_when_handy_has_no_settings() {
 
     assert_eq!(output.status.code(), Some(1));
     assert!(sandbox.stores() == stores, "a store was written");
-    assert!(!sandbox.agent().exists());
+    assert!(!sandbox.bundle().exists());
     assert!(sandbox.calls().is_empty(), "{:?}", sandbox.calls());
 }
 
@@ -296,7 +309,7 @@ fn install_never_restarts_a_running_app_without_consent() {
     assert_eq!(sandbox.fluxer_mutes(), 0);
     assert_eq!(sandbox.discord_mutes(), 0);
     let calls = sandbox.calls();
-    assert!(!calls.iter().any(|call| call.starts_with("pkill") || call.starts_with("open")), "{calls:?}");
+    assert!(!calls.iter().any(|call| call.starts_with("pkill") || call.starts_with("open -g -a ")), "{calls:?}");
     assert_eq!(sandbox.handy_setting("keyboard_implementation"), "tauri"); // Handy was not running
     assert!(sandbox.agent().is_file());
 }
@@ -340,12 +353,12 @@ fn install_refuses_a_ducking_level_that_is_no_volume() {
 
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(sandbox.handy_setting("keyboard_implementation"), "handy_keys");
-    assert!(!sandbox.agent().exists());
+    assert!(!sandbox.bundle().exists());
 }
 
 #[test]
-fn install_runs_the_service_from_an_app_bundle_with_a_name_and_an_icon() {
-    let sandbox = Sandbox::new("bundle");
+fn install_puts_an_app_into_applications_that_carries_the_service() {
+    let sandbox = Sandbox::new("app");
     sandbox.handy("option+space");
 
     let output = sandbox.duckcall(&["install"]);
@@ -355,15 +368,68 @@ fn install_runs_the_service_from_an_app_bundle_with_a_name_and_an_icon() {
     let info = contents.join("Info.plist");
     assert_eq!(plist_value(&info, "CFBundleName"), "Duckcall"); // what System Settings lists
     // The names in Info.plist must lead to the files that are there.
-    let executable = contents.join("MacOS").join(plist_value(&info, "CFBundleExecutable"));
-    assert!(fs::read(&executable).unwrap() == fs::read(env!("CARGO_BIN_EXE_duckcall")).unwrap(), "not this duckcall");
+    let executable = plist_value(&info, "CFBundleExecutable");
+    let copy = fs::read(contents.join("MacOS").join(&executable)).unwrap();
+    assert!(copy == fs::read(env!("CARGO_BIN_EXE_duckcall")).unwrap(), "not this duckcall");
     let icon = contents.join("Resources").join(plist_value(&info, "CFBundleIconFile") + ".icns");
     let logo = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/duckcall.icns");
     assert!(fs::read(&icon).unwrap() == fs::read(logo).unwrap(), "not the logo");
-    // macOS names the background item after the app that contains the service's executable.
-    assert_eq!(plist_value(&sandbox.agent(), "ProgramArguments.0"), executable.to_string_lossy());
-    let signed = format!("codesign --force --sign - {}", sandbox.bundle().display());
-    assert!(sandbox.calls().contains(&signed), "{:?}", sandbox.calls());
+    // The agent inside the app: launchd runs the app's own executable with `run` and keeps it alive.
+    let agent = sandbox.agent();
+    assert_eq!(plist_value(&agent, "Label"), sandbox.label());
+    assert!(sandbox.label().starts_with("io.github.lansidev.duckcall."), "{}", sandbox.label());
+    assert_eq!(plist_value(&agent, "BundleProgram"), format!("Contents/MacOS/{executable}"));
+    assert_eq!(plist_value(&agent, "ProgramArguments.1"), "run");
+    assert_eq!(plist_value(&agent, "RunAtLoad"), "true");
+    assert_eq!(plist_value(&agent, "KeepAlive"), "true");
+    // Signed as a whole; then the app registers its agent itself.
+    let calls = sandbox.calls();
+    let signed = calls.iter().position(|call| *call == format!("codesign --force --sign - {}", sandbox.bundle().display()));
+    assert!(signed.is_some() && signed < sandbox.app_ran("register"), "{calls:?}");
+}
+
+#[test]
+fn install_again_takes_the_registration_back_before_it_replaces_the_app() {
+    let sandbox = Sandbox::new("again");
+    sandbox.handy("option+space");
+    assert!(sandbox.duckcall(&["install"]).status.success());
+
+    let output = sandbox.duckcall(&["install"]);
+
+    assert!(output.status.success(), "{output:?}");
+    let calls = sandbox.calls();
+    let unregistered = sandbox.app_ran("unregister");
+    let signed = calls.iter().rposition(|call| call.starts_with("codesign "));
+    assert!(unregistered.is_some() && unregistered < signed && signed < sandbox.app_ran("register"), "{calls:?}");
+}
+
+#[test]
+fn install_fails_with_what_the_app_reports_when_it_cannot_register() {
+    let sandbox = Sandbox::new("refused");
+    sandbox.handy("option+space");
+    fs::write(sandbox.root.join("app-fails"), "").unwrap();
+
+    let output = sandbox.duckcall(&["install"]);
+
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("Operation not permitted"), "{output:?}");
+}
+
+#[test]
+fn install_gives_a_changed_app_a_new_agent_label() {
+    let sandbox = Sandbox::new("label");
+    sandbox.handy("option+space");
+    let install = |level: &str| {
+        assert!(sandbox.command().arg("install").env("DUCK_VOLUME", level).output().unwrap().status.success());
+        sandbox.label()
+    };
+
+    let first = install("5");
+    let same = install("5");
+    let changed = install("6"); // macOS refuses to launch changed code under the label it knows
+
+    assert_eq!(first, same);
+    assert_ne!(first, changed);
 }
 
 // --- uninstall -----------------------------------------------------------------------------------
@@ -373,13 +439,14 @@ fn uninstall_removes_the_service_and_gives_handy_its_keyboard_back() {
     let sandbox = Sandbox::new("uninstall");
     sandbox.handy("option+space").fluxer().discord();
     assert!(sandbox.duckcall(&["install"]).status.success());
+    let label = sandbox.label();
 
     let output = sandbox.duckcall(&["uninstall"]);
 
     assert!(output.status.success(), "{output:?}");
-    assert!(!sandbox.agent().exists());
-    assert!(!sandbox.bundle().parent().unwrap().exists(), "the app bundle is still there");
-    assert!(sandbox.calls().contains(&format!("launchctl bootout {}", service())));
+    assert!(!sandbox.bundle().exists(), "the app is still there");
+    assert!(sandbox.app_ran("unregister") > sandbox.app_ran("register"), "{:?}", sandbox.calls());
+    assert!(sandbox.calls().contains(&format!("launchctl bootout gui/{}/{label}", unsafe { libc::getuid() })));
     assert_eq!(sandbox.handy_setting("keyboard_implementation"), "handy_keys");
     assert_eq!(sandbox.fluxer_mutes(), 1); // the shortcuts stay
     assert_eq!(sandbox.discord_mutes(), 1);
@@ -396,7 +463,7 @@ fn uninstall_does_not_restart_a_running_handy_without_consent() {
 
     assert_eq!(output.status.code(), Some(1));
     assert_eq!(sandbox.handy_setting("keyboard_implementation"), "tauri");
-    assert!(!sandbox.agent().exists()); // the service is gone all the same
+    assert!(!sandbox.bundle().exists()); // the app is gone all the same
     assert!(!sandbox.calls().iter().any(|call| call.starts_with("pkill")));
 }
 

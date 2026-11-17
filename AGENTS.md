@@ -21,11 +21,16 @@ macOS only so far. Linux is planned: keep everything macOS-specific in `src/maco
 - **Why Handy is switched to `keyboard_implementation = tauri`.** Handy's macOS default, `handy_keys`, runs an
   active event tap and deletes the shortcut's key event. Fluxer only listens and never sees the key. With `tauri`,
   Handy registers a system hotkey and the event stays visible to other listeners.
-- **Service.** A LaunchAgent (`io.github.lansidev.duckcall`) runs `duckcall run` from an app bundle that `install`
-  builds around a copy of the executable: `~/Library/Application Support/duckcall/Duckcall.app`. The bundle is
-  there for System Settings only. macOS names a background item after the app that contains its executable, so
-  the list shows "Duckcall" with the logo instead of a bare executable. `AssociatedBundleIdentifiers`, the
-  documented way, is ignored for executables without a Team ID.
+- **Service.** `install` builds `/Applications/Duckcall.app` around a copy of the executable and starts the app
+  once with `register`. The app carries its launch agent (`Contents/Library/LaunchAgents/<label>.plist`: its own
+  executable with `run`) and registers it through `SMAppService`. That is what makes macOS file the service under
+  an app, so that System Settings lists "Duckcall" with the logo. A plain LaunchAgent of an unsigned developer is
+  listed by the name of its executable and without an icon, also when the executable sits in an app, and
+  `AssociatedBundleIdentifiers` is ignored without a Team ID.
+- **The agent's label changes with the app's code** (`label` in `macos.rs`). The app is signed ad hoc, so macOS
+  pins a registration to the exact code and remembers that for the label after `unregister`. Changed code under a
+  known label gives a job that never starts: `last exit code = 78: EX_CONFIG`, `job state = spawn failed`. So
+  `install` unregisters, rebuilds the app, and registers it under the new label.
 
 ## Code map
 
@@ -34,7 +39,7 @@ macOS only so far. Linux is planned: keep everything macOS-specific in `src/maco
 | `src/main.rs` | CLI, `install` / `uninstall`, consent before restarting apps (`apply`, `confirm`) |
 | `src/duck.rs` | `run`: `Tail` (a polling `tail -F`) and `Duck` (remembers the volume from before) |
 | `src/apps.rs` | Reading and writing the settings of Handy, Fluxer and Discord |
-| `src/macos.rs` | Paths, volume (`osascript`), process control, LaunchAgent and app bundle; imported as `platform` |
+| `src/macos.rs` | Paths, volume (`osascript`), process control, Duckcall.app and its registration; imported as `platform` |
 | `tests/cli.rs` | End-to-end tests: the real binary in a sandbox (`Sandbox`) |
 | `assets/logo.svg` | The logo, shown in the README |
 | `assets/duckcall.icns` | The app bundle's icon, compiled into the binary. After changing the logo, run `assets/icns.sh` |
@@ -51,8 +56,9 @@ A Linux port adds `src/linux.rs` with the same public items as `macos.rs` and ex
   `discord_read` works on a copy. Before writing, `discord_configure` copies the directory to
   `leveldb.duckcall-backup`, because that LevelDB also holds the Discord login.
 - **Do not test against the real apps or stores.** Unit tests build their own stores, and `tests/cli.rs` runs the
-  binary in a sandbox: `HOME` is a scratch directory and the only `PATH` entry holds stand-ins for `launchctl`,
-  `pgrep`, `pkill`, `open`, `osascript` and `codesign`. If you copy a real Fluxer or Discord store for an experiment, it
+  binary in a sandbox: `HOME` and `DUCKCALL_APPLICATIONS` are scratch directories and the only `PATH` entry holds
+  stand-ins for `launchctl`, `pgrep`, `pkill`, `open`, `osascript` and `codesign`. The stand-in for `open` is what
+  keeps a test from registering a real service. If you copy a real Fluxer or Discord store for an experiment, it
   contains login tokens: delete it afterwards and keep it out of the repository.
 - **Assume the user is in a live call.** Do not play sound, do not restart Handy, Fluxer or Discord, and change
   the real output volume only for a short check that you announce.
@@ -94,7 +100,7 @@ Every change comes with a test for the behaviour it changes.
 |---|---|
 | `src/duck.rs` | `DUCK_VOLUME` parsing, the ducking rules (`Duck`), following a log (`Tail`) |
 | `src/apps.rs` | Per app: what counts as set up, what gets written, what is refused and left as it was |
-| `src/macos.rs` | The LaunchAgent is a plist that `plutil` can read |
+| `src/macos.rs` | Nothing of its own: the app and its plists are checked through `tests/cli.rs` |
 | `tests/cli.rs` | `install`, `uninstall` and `run` end to end, through the real binary in the sandbox |
 
 - For new end-to-end behaviour, add a fixture or a stand-in to `Sandbox`. A stand-in must never fall through to
@@ -105,11 +111,14 @@ Every change comes with a test for the behaviour it changes.
   calls of the stand-ins, exit codes) rather than the wording of messages.
 - After changing the LevelDB code, also modify a copy of a real Discord store and read it with a second LevelDB
   implementation (for example Node's `classic-level`): every key must still be there, with only `keybinds` changed.
-- The service runs its own copy of the binary, inside the app bundle. To try a change for real:
-  `cargo install --path . --root ~/.local`, then `duckcall install`, which replaces the copy.
-- To see what macOS calls the background item without opening System Settings, look at `name=` right after
-  `duckcall install`:
-  `log show --last 1m --info --predicate 'process == "backgroundtaskmanagementd"' | grep lansidev`
+- `register` and `unregister`, the `SMAppService` calls in `app_service`, have no test: they only work from inside
+  the installed app and change the real system. After touching them, `label` or the layout of the app, install
+  for real twice with different `DUCK_VOLUME` values (`cargo install --path . --root ~/.local`, then
+  `duckcall install`) and check both times that `launchctl print gui/$(id -u)/<label>` says `state = running`.
+  The label is the name of the plist in `/Applications/Duckcall.app/Contents/Library/LaunchAgents`.
+- What macOS has on record is readable without root: `plutil -p` on the newest
+  `/private/var/db/com.apple.backgroundtaskmanagement/BackgroundItems-v*.btm`. Duckcall must be there as an app
+  with the agent in its container, not as a `legacy agent` under `Unknown Developer`.
 - `HANDY_LOG=<file> duckcall run` follows another file; appending the trigger lines to it exercises `run`
   without Handy. Outside the sandbox this changes the real output volume.
 

@@ -18,12 +18,15 @@ use std::process::ExitCode;
 type Result<T, E = Box<dyn std::error::Error>> = std::result::Result<T, E>;
 
 const USAGE: &str = "usage: duckcall <command>
-  install [--yes]     set up Handy and the call apps, then run duckcall in the background
-  uninstall [--yes]   remove the background service, restore Handy's keyboard implementation
+  install [--yes]     set up Handy and the call apps, install Duckcall.app and start its background service
+  uninstall [--yes]   remove Duckcall.app and its service, restore Handy's keyboard implementation
   run                 follow Handy and duck the volume (what the background service runs)
+  register            switch the background service on (what Duckcall.app does when it is opened)
+  unregister          switch the background service off
 
 --yes restarts running apps without asking.
-DUCK_VOLUME=10 duckcall install   ducks to another output volume (default 5, range 0-100)";
+DUCK_VOLUME=10 duckcall install                         ducks to another output volume (default 5, range 0-100)
+DUCKCALL_APPLICATIONS=~/Applications duckcall install   puts the app there instead of /Applications";
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -34,6 +37,10 @@ fn main() -> ExitCode {
         ["uninstall"] => uninstall(false),
         ["uninstall", "--yes"] => uninstall(true),
         ["run"] => duck::run().map(|()| true),
+        ["register"] => platform::app_service(true).map(|()| true),
+        ["unregister"] => platform::app_service(false).map(|()| true),
+        // Duckcall.app opened like any other app: it switches its background service on.
+        [] if platform::in_app() => platform::app_service(true).map(|()| true),
         _ => {
             eprintln!("{USAGE}");
             return ExitCode::from(2);
@@ -70,13 +77,13 @@ fn install(yes: bool) -> Result<bool> {
     }
     let complete = apply(&pending, yes, App::configure)?;
     platform::service_install(level)?;
-    println!("duckcall runs in the background and ducks to volume {level}");
+    println!("Duckcall.app runs in the background and ducks to volume {level}");
     Ok(complete)
 }
 
 fn uninstall(yes: bool) -> Result<bool> {
     platform::service_remove()?;
-    println!("background service removed");
+    println!("Duckcall.app and its background service removed");
     let store = platform::store(App::Handy);
     let changed = store.exists() && apps::handy_get("/settings/keyboard_implementation")? != platform::HANDY_KEYBOARD;
     let handy: &[App] = if changed { &[App::Handy] } else { &[] };

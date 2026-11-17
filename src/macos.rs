@@ -2,8 +2,10 @@
 
 use crate::Result;
 use crate::apps::App;
+use std::ffi::{CStr, CString, c_char, c_void};
 use std::fs;
-use std::io::ErrorKind;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Duration;
@@ -14,7 +16,8 @@ pub const HANDY_KEYBOARD: &str = "handy_keys";
 /// Left Option + Space the way Discord stores a shortcut: [keyboard, USB HID usage, macOS].
 pub const DISCORD_OPTION_SPACE: [[u32; 3]; 2] = [[0, 226, 2], [0, 44, 2]];
 
-const LABEL: &str = "io.github.lansidev.duckcall";
+/// The bundle identifier of Duckcall.app and the start of its agent's label.
+const ID: &str = "io.github.lansidev.duckcall";
 
 fn home() -> PathBuf {
     PathBuf::from(std::env::var_os("HOME").unwrap_or_default())
@@ -84,21 +87,18 @@ pub fn start(app: App) -> Result<()> {
     Ok(())
 }
 
-// --- background service: a LaunchAgent that runs from an app bundle ------------------------------
+// --- background service: an app in /Applications that registers its own agent --------------------
 
-/// The icon of the app bundle, built from `assets/logo.svg` by `assets/icns.sh`.
+/// The icon of the app, built from `assets/logo.svg` by `assets/icns.sh`.
 const ICON: &[u8] = include_bytes!("../assets/duckcall.icns");
 
-fn plist() -> PathBuf {
-    home().join("Library/LaunchAgents").join(format!("{LABEL}.plist"))
-}
-
-/// The service runs from an app bundle of its own, because macOS names a background item after
-/// the app that contains its executable: System Settings then lists "Duckcall" with its icon
-/// instead of an anonymous executable. The documented way, `AssociatedBundleIdentifiers` in the
-/// LaunchAgent, is ignored for executables without a Team ID.
-fn bundle() -> PathBuf {
-    home().join("Library/Application Support/duckcall/Duckcall.app")
+/// The service is an app, Duckcall.app, that carries its launch agent inside and registers it
+/// through `SMAppService`. macOS then files the service under the app, and System Settings lists
+/// "Duckcall" with its icon. A plain LaunchAgent of an unsigned developer is listed by the name of
+/// its executable and without an icon, wherever that executable lives.
+fn app() -> PathBuf {
+    let applications = std::env::var_os("DUCKCALL_APPLICATIONS").map_or_else(|| PathBuf::from("/Applications"), PathBuf::from);
+    applications.join("Duckcall.app")
 }
 
 fn info_plist() -> String {
@@ -108,7 +108,7 @@ fn info_plist() -> String {
 <plist version="1.0">
 <dict>
 	<key>CFBundleIdentifier</key>
-	<string>{LABEL}</string>
+	<string>{ID}</string>
 	<key>CFBundleName</key>
 	<string>Duckcall</string>
 	<key>CFBundleDisplayName</key>
@@ -132,78 +132,31 @@ fn info_plist() -> String {
     )
 }
 
-fn remove_file(path: &Path) -> Result<()> {
-    match fs::remove_file(path) {
-        Err(error) if error.kind() != ErrorKind::NotFound => Err(error.into()),
-        _ => Ok(()),
-    }
+/// The agent's label. It changes whenever the app's code does. macOS ties a registration to the
+/// exact code, because the app is not signed by a developer, and it remembers that for a label
+/// after the registration is taken back: changed code under the old label fails to launch with
+/// EX_CONFIG, under a new label it starts at once.
+fn label(code: &[u8], level: u8) -> String {
+    let mut hasher = DefaultHasher::new();
+    code.hash(&mut hasher);
+    level.hash(&mut hasher);
+    format!("{ID}.{:08x}", hasher.finish() as u32)
 }
 
-/// Builds the app bundle around a copy of this executable and returns the copy.
-fn bundle_install() -> Result<PathBuf> {
-    let contents = bundle().join("Contents");
-    fs::create_dir_all(contents.join("MacOS"))?;
-    fs::create_dir_all(contents.join("Resources"))?;
-    fs::write(contents.join("Info.plist"), info_plist())?;
-    fs::write(contents.join("Resources/duckcall.icns"), ICON)?;
-    let exe = contents.join("MacOS/duckcall");
-    let this = fs::canonicalize(std::env::current_exe()?)?;
-    // `install` may be run from the copy itself.
-    if fs::canonicalize(&exe).ok().as_ref() != Some(&this) {
-        remove_file(&exe)?; // a new file, never a rewrite of one that may still be mapped
-        fs::copy(&this, &exe)?;
-    }
-    // Info.plist and the icon belong to the bundle's signature, so sign it as a whole.
-    let signed = Command::new("codesign")
-        .args(["--force", "--sign", "-"])
-        .arg(bundle())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()?
-        .success();
-    if !signed {
-        return Err("codesign could not sign the app bundle".into());
-    }
-    Ok(exe)
-}
-
-fn launchctl(args: &[&str]) -> bool {
-    Command::new("launchctl")
-        .args(args)
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .is_ok_and(|status| status.success())
-}
-
-fn domain() -> String {
-    format!("gui/{}", unsafe { libc::getuid() })
-}
-
-fn service_stop() {
-    let service = format!("{}/{LABEL}", domain());
-    launchctl(&["bootout", &service]);
-    // bootout returns before the service is gone, and bootstrap fails while it still exists.
-    for _ in 0..50 {
-        if !launchctl(&["print", &service]) {
-            break;
-        }
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
-
-fn agent(exe: &str, level: u8) -> String {
-    let exe = exe.replace('&', "&amp;").replace('<', "&lt;");
+/// The agent as launchd reads it from inside the app; `BundleProgram` is relative to the app.
+fn agent(label: &str, level: u8) -> String {
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
 	<key>Label</key>
-	<string>{LABEL}</string>
+	<string>{label}</string>
+	<key>BundleProgram</key>
+	<string>Contents/MacOS/duckcall</string>
 	<key>ProgramArguments</key>
 	<array>
-		<string>{exe}</string>
+		<string>duckcall</string>
 		<string>run</string>
 	</array>
 	<key>EnvironmentVariables</key>
@@ -221,54 +174,170 @@ fn agent(exe: &str, level: u8) -> String {
     )
 }
 
-/// Runs `duckcall run` at login and keeps it alive.
-pub fn service_install(level: u8) -> Result<()> {
-    service_stop(); // nothing may run from the bundle while it is rebuilt
-    let exe = bundle_install()?;
-    let plist = plist();
-    fs::create_dir_all(home().join("Library/LaunchAgents"))?;
-    fs::write(&plist, agent(&exe.to_string_lossy(), level))?;
-    if !launchctl(&["bootstrap", &domain(), &plist.to_string_lossy()]) {
-        return Err("launchctl could not start the background service".into());
+/// The file name of the agent an app carries, `<label>.plist`, if it carries one.
+fn agent_file(app: &Path) -> Option<String> {
+    let files = fs::read_dir(app.join("Contents/Library/LaunchAgents")).ok()?;
+    files.filter_map(|file| file.ok()?.file_name().into_string().ok()).find(|name| name.ends_with(".plist"))
+}
+
+/// Builds the app around a copy of this executable.
+fn app_build(app: &Path, level: u8) -> Result<()> {
+    let code = fs::read(std::env::current_exe()?)?; // before the old app goes: `install` may be run from it
+    if app.exists() {
+        fs::remove_dir_all(app)?;
+    }
+    let contents = app.join("Contents");
+    for directory in ["MacOS", "Resources", "Library/LaunchAgents"] {
+        fs::create_dir_all(contents.join(directory)).map_err(|error| {
+            format!("cannot write {}: {error}. DUCKCALL_APPLICATIONS=~/Applications installs it for you alone", app.display())
+        })?;
+    }
+    fs::write(contents.join("Info.plist"), info_plist())?;
+    fs::write(contents.join("Resources/duckcall.icns"), ICON)?;
+    let label = label(&code, level);
+    fs::write(contents.join("Library/LaunchAgents").join(format!("{label}.plist")), agent(&label, level))?;
+    let exe = contents.join("MacOS/duckcall");
+    fs::write(&exe, code)?;
+    fs::set_permissions(&exe, fs::Permissions::from_mode(0o755))?;
+    // The plists and the icon belong to the app's signature, so sign it as a whole.
+    let signed = Command::new("codesign")
+        .args(["--force", "--sign", "-"])
+        .arg(app)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?
+        .success();
+    if !signed {
+        return Err("codesign could not sign Duckcall.app".into());
     }
     Ok(())
+}
+
+/// Runs the app with one command, the way macOS starts apps, and fails with what it wrote to
+/// stderr. `open` is also the seam for the tests: replacing it keeps them from registering a
+/// real service.
+fn app_run(app: &Path, command: &str) -> Result<()> {
+    let errors = std::env::temp_dir().join(format!("duckcall-{command}-{}.txt", std::process::id()));
+    let started = Command::new("open")
+        .args(["-n", "-W", "-g", "-a"])
+        .arg(app)
+        .arg("--stderr")
+        .arg(&errors)
+        .args(["--args", command])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()?
+        .success();
+    let message = fs::read_to_string(&errors).unwrap_or_default();
+    fs::remove_file(&errors).ok();
+    if !started {
+        return Err(format!("could not start {}", app.display()).into());
+    }
+    match message.trim() {
+        "" => Ok(()),
+        message => Err(message.into()),
+    }
+}
+
+fn launchctl(args: &[&str]) -> bool {
+    Command::new("launchctl")
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+/// Takes the registration of the installed app back, before the app changes or goes.
+fn service_unregister(app: &Path) {
+    let Some(agent) = agent_file(app) else { return };
+    let _ = app_run(app, "unregister"); // usually fails because nothing is registered
+    // Whatever is still loaded, also from a registration macOS has lost track of.
+    let service = format!("gui/{}/{}", unsafe { libc::getuid() }, agent.trim_end_matches(".plist"));
+    launchctl(&["bootout", &service]);
+    for _ in 0..50 {
+        if !launchctl(&["print", &service]) {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Installs Duckcall.app and has it register its agent: `duckcall run` at login, kept alive.
+pub fn service_install(level: u8) -> Result<()> {
+    let app = app();
+    service_unregister(&app);
+    app_build(&app, level)?;
+    app_run(&app, "register")
 }
 
 pub fn service_remove() -> Result<()> {
-    service_stop();
-    remove_file(&plist())?;
-    let bundle = bundle();
-    if bundle.exists() {
-        fs::remove_dir_all(&bundle)?;
-    }
-    // The directory around the bundle is duckcall's own: it goes too, unless something else is in it.
-    if let Some(directory) = bundle.parent() {
-        fs::remove_dir(directory).ok();
+    let app = app();
+    service_unregister(&app);
+    if app.exists() {
+        fs::remove_dir_all(&app)?;
     }
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+/// The app this executable sits in, which is how it runs when Duckcall.app is opened.
+fn own_app() -> Option<PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let app = exe.parent()?.parent()?.parent()?;
+    (app.extension()? == "app").then(|| app.to_path_buf())
+}
 
-    fn plutil(file: &str, key: &str) -> String {
-        let output = Command::new("/usr/bin/plutil").args(["-extract", key, "raw", "-o", "-", file]).output().unwrap();
-        assert!(output.status.success(), "plutil cannot read {key}: {}", String::from_utf8_lossy(&output.stderr));
-        String::from_utf8_lossy(&output.stdout).trim().to_string()
-    }
+pub fn in_app() -> bool {
+    own_app().is_some()
+}
 
-    #[test]
-    fn the_launch_agent_is_a_valid_plist_and_keeps_odd_paths_intact() {
-        let exe = "/Users/R&D <dev>/bin/duckcall";
-        let file = std::env::temp_dir().join("duckcall-test-agent.plist");
-        fs::write(&file, agent(exe, 7)).unwrap();
-        let file = file.to_string_lossy();
+// --- SMAppService, through the Objective-C runtime -----------------------------------------------
 
-        assert_eq!(plutil(&file, "ProgramArguments.0"), exe);
-        assert_eq!(plutil(&file, "ProgramArguments.1"), "run");
-        assert_eq!(plutil(&file, "EnvironmentVariables.DUCK_VOLUME"), "7");
-        assert_eq!(plutil(&file, "RunAtLoad"), "true");
-        assert_eq!(plutil(&file, "KeepAlive"), "true");
+type Object = *mut c_void;
+
+#[link(name = "objc")]
+unsafe extern "C" {
+    fn objc_getClass(name: *const c_char) -> Object;
+    fn sel_registerName(name: *const c_char) -> Object;
+    fn objc_msgSend();
+}
+
+// Loads the frameworks whose classes are looked up by name below.
+#[link(name = "Foundation", kind = "framework")]
+unsafe extern "C" {}
+
+#[link(name = "ServiceManagement", kind = "framework")]
+unsafe extern "C" {}
+
+/// Registers the agent inside the app this executable belongs to, or takes that back.
+/// It has to run from the app's own executable: that app is where macOS looks for the agent.
+pub fn app_service(register: bool) -> Result<()> {
+    let agent = own_app().and_then(|app| agent_file(&app)).ok_or("this only works inside Duckcall.app; use `duckcall install`")?;
+    let agent = CString::new(agent)?;
+    // objc_msgSend has no signature of its own; each call needs the one of the method it reaches.
+    let send = objc_msgSend as *const ();
+    unsafe {
+        let with_text: extern "C" fn(Object, Object, *const c_char) -> Object = std::mem::transmute(send);
+        let with_object: extern "C" fn(Object, Object, Object) -> Object = std::mem::transmute(send);
+        let with_error: extern "C" fn(Object, Object, *mut Object) -> i8 = std::mem::transmute(send);
+        let plain: extern "C" fn(Object, Object) -> Object = std::mem::transmute(send);
+        let selector = |name: &CStr| sel_registerName(name.as_ptr());
+
+        let class = objc_getClass(c"SMAppService".as_ptr());
+        if class.is_null() {
+            return Err("the background service needs macOS 13 or later".into());
+        }
+        let name = with_text(objc_getClass(c"NSString".as_ptr()), selector(c"stringWithUTF8String:"), agent.as_ptr());
+        let service = with_object(class, selector(c"agentServiceWithPlistName:"), name);
+        let action = if register { c"registerAndReturnError:" } else { c"unregisterAndReturnError:" };
+        let mut error: Object = std::ptr::null_mut();
+        if with_error(service, selector(action), &mut error) != 0 {
+            return Ok(());
+        }
+        if error.is_null() {
+            return Err("macOS refused without giving a reason".into());
+        }
+        let description = plain(plain(error, selector(c"localizedDescription")), selector(c"UTF8String"));
+        Err(CStr::from_ptr(description as *const c_char).to_string_lossy().into_owned().into())
     }
 }

@@ -27,7 +27,7 @@ duckcall install
 | Handy: `log_level = debug` | `settings_store.json` | duckcall detects the start and end of a recording from Handy's DEBUG log lines. |
 | Fluxer: "Push to mute" on ⌥Space | `desktop-app-store.sqlite3` | Mutes the microphone while the key is held. |
 | Discord: "Push to Mute" on ⌥Space | localStorage (LevelDB) | Same as Fluxer. The previous state is copied to `leveldb.duckcall-backup` first. |
-| Background service | LaunchAgent `io.github.lansidev.duckcall`, app bundle `~/Library/Application Support/duckcall/Duckcall.app` | Starts `duckcall run` at login. It runs from an app bundle so that System Settings lists the background item as "Duckcall" with its icon. |
+| Duckcall.app | `/Applications` | The background service. It starts `duckcall run` at login and shows up in System Settings as "Duckcall" with its icon. |
 
 Settings that already match are left alone. If an app whose settings have to change is running,
 duckcall asks before restarting it, because a restart ends active calls. `--yes` restarts without
@@ -36,6 +36,7 @@ asking; without a terminal and without `--yes` the app is skipped.
 Requirements:
 
 - Handy, Fluxer and Discord must each have been started once. A call app that is missing is skipped.
+- Writing to `/Applications` needs an administrator account. `DUCKCALL_APPLICATIONS=~/Applications duckcall install` installs the app for you alone.
 - Fluxer and Discord need the macOS "Input Monitoring" permission; without it they only see keys in their own window.
 - In both apps "push to mute" only works in voice-activity mode, not with push-to-talk.
 
@@ -43,12 +44,12 @@ Requirements:
 
 ```sh
 DUCK_VOLUME=10 duckcall install   # another volume while dictating (0-100, default 5)
-duckcall uninstall                # remove the service, set Handy back to handy_keys
+duckcall uninstall                # remove Duckcall.app, set Handy back to handy_keys
 ```
 
 The push-to-mute shortcuts in Fluxer and Discord stay after `uninstall`.
 
-After updating duckcall, run `duckcall install` again: the service runs its own copy of the binary.
+After updating duckcall, run `duckcall install` again: Duckcall.app carries its own copy of the binary.
 
 ## Limits
 
