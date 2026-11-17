@@ -21,7 +21,11 @@ macOS only so far. Linux is planned: keep everything macOS-specific in `src/maco
 - **Why Handy is switched to `keyboard_implementation = tauri`.** Handy's macOS default, `handy_keys`, runs an
   active event tap and deletes the shortcut's key event. Fluxer only listens and never sees the key. With `tauri`,
   Handy registers a system hotkey and the event stays visible to other listeners.
-- **Service.** A LaunchAgent (`io.github.lansidev.duckcall`) runs the installed binary with `run`.
+- **Service.** A LaunchAgent (`io.github.lansidev.duckcall`) runs `duckcall run` from an app bundle that `install`
+  builds around a copy of the executable: `~/Library/Application Support/duckcall/Duckcall.app`. The bundle is
+  there for System Settings only. macOS names a background item after the app that contains its executable, so
+  the list shows "Duckcall" with the logo instead of a bare executable. `AssociatedBundleIdentifiers`, the
+  documented way, is ignored for executables without a Team ID.
 
 ## Code map
 
@@ -30,8 +34,10 @@ macOS only so far. Linux is planned: keep everything macOS-specific in `src/maco
 | `src/main.rs` | CLI, `install` / `uninstall`, consent before restarting apps (`apply`, `confirm`) |
 | `src/duck.rs` | `run`: `Tail` (a polling `tail -F`) and `Duck` (remembers the volume from before) |
 | `src/apps.rs` | Reading and writing the settings of Handy, Fluxer and Discord |
-| `src/macos.rs` | Paths, volume (`osascript`), process control, LaunchAgent; imported as `platform` |
+| `src/macos.rs` | Paths, volume (`osascript`), process control, LaunchAgent and app bundle; imported as `platform` |
 | `tests/cli.rs` | End-to-end tests: the real binary in a sandbox (`Sandbox`) |
+| `assets/logo.svg` | The logo, shown in the README |
+| `assets/duckcall.icns` | The app bundle's icon, compiled into the binary. After changing the logo, run `assets/icns.sh` |
 
 A Linux port adds `src/linux.rs` with the same public items as `macos.rs` and extends the `cfg` in `main.rs`.
 
@@ -46,7 +52,7 @@ A Linux port adds `src/linux.rs` with the same public items as `macos.rs` and ex
   `leveldb.duckcall-backup`, because that LevelDB also holds the Discord login.
 - **Do not test against the real apps or stores.** Unit tests build their own stores, and `tests/cli.rs` runs the
   binary in a sandbox: `HOME` is a scratch directory and the only `PATH` entry holds stand-ins for `launchctl`,
-  `pgrep`, `pkill`, `open` and `osascript`. If you copy a real Fluxer or Discord store for an experiment, it
+  `pgrep`, `pkill`, `open`, `osascript` and `codesign`. If you copy a real Fluxer or Discord store for an experiment, it
   contains login tokens: delete it afterwards and keep it out of the repository.
 - **Assume the user is in a live call.** Do not play sound, do not restart Handy, Fluxer or Discord, and change
   the real output volume only for a short check that you announce.
@@ -99,8 +105,11 @@ Every change comes with a test for the behaviour it changes.
   calls of the stand-ins, exit codes) rather than the wording of messages.
 - After changing the LevelDB code, also modify a copy of a real Discord store and read it with a second LevelDB
   implementation (for example Node's `classic-level`): every key must still be there, with only `keybinds` changed.
-- The LaunchAgent runs the installed binary, not `target/`. To try a change for real:
-  `cargo install --path . --root ~/.local`, then `duckcall install`.
+- The service runs its own copy of the binary, inside the app bundle. To try a change for real:
+  `cargo install --path . --root ~/.local`, then `duckcall install`, which replaces the copy.
+- To see what macOS calls the background item without opening System Settings, look at `name=` right after
+  `duckcall install`:
+  `log show --last 1m --info --predicate 'process == "backgroundtaskmanagementd"' | grep lansidev`
 - `HANDY_LOG=<file> duckcall run` follows another file; appending the trigger lines to it exercises `run`
   without Handy. Outside the sandbox this changes the real output volume.
 

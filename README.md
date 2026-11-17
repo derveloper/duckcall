@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.svg" width="180" alt="duckcall logo: a duck wearing headphones">
+</p>
+
 # duckcall
 
 Dictate without the call talking over you. While [Handy](https://github.com/cjpais/Handy) records (hold ⌥Space),
@@ -23,7 +27,7 @@ duckcall install
 | Handy: `log_level = debug` | `settings_store.json` | duckcall detects the start and end of a recording from Handy's DEBUG log lines. |
 | Fluxer: "Push to mute" on ⌥Space | `desktop-app-store.sqlite3` | Mutes the microphone while the key is held. |
 | Discord: "Push to Mute" on ⌥Space | localStorage (LevelDB) | Same as Fluxer. The previous state is copied to `leveldb.duckcall-backup` first. |
-| Background service | LaunchAgent `io.github.lansidev.duckcall` | Starts `duckcall run` at login. |
+| Background service | LaunchAgent `io.github.lansidev.duckcall`, app bundle `~/Library/Application Support/duckcall/Duckcall.app` | Starts `duckcall run` at login. It runs from an app bundle so that System Settings lists the background item as "Duckcall" with its icon. |
 
 Settings that already match are left alone. If an app whose settings have to change is running,
 duckcall asks before restarting it, because a restart ends active calls. `--yes` restarts without
@@ -43,6 +47,8 @@ duckcall uninstall                # remove the service, set Handy back to handy_
 ```
 
 The push-to-mute shortcuts in Fluxer and Discord stay after `uninstall`.
+
+After updating duckcall, run `duckcall install` again: the service runs its own copy of the binary.
 
 ## Limits
 

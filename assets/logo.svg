@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-label="duckcall: a duck wearing headphones">
+  <defs>
+    <linearGradient id="tile-colour" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#7B2FF7"/>
+      <stop offset="1" stop-color="#F72585"/>
+    </linearGradient>
+    <clipPath id="tile">
+      <rect x="50" y="50" width="412" height="412" rx="92"/>
+    </clipPath>
+  </defs>
+
+  <rect x="50" y="50" width="412" height="412" rx="92" fill="url(#tile-colour)"/>
+
+  <g clip-path="url(#tile)">
+    <!-- halftone dots fading out of the top right corner -->
+    <g fill="#FFFFFF" opacity="0.32">
+      <circle cx="434" cy="78" r="9"/><circle cx="406" cy="78" r="8"/><circle cx="378" cy="78" r="7"/><circle cx="350" cy="78" r="6"/><circle cx="322" cy="78" r="5"/><circle cx="294" cy="78" r="4"/>
+      <circle cx="434" cy="106" r="8"/><circle cx="406" cy="106" r="7"/><circle cx="378" cy="106" r="6"/><circle cx="350" cy="106" r="5"/><circle cx="322" cy="106" r="4"/>
+      <circle cx="434" cy="134" r="7"/><circle cx="406" cy="134" r="6"/><circle cx="378" cy="134" r="5"/><circle cx="350" cy="134" r="4"/>
+      <circle cx="434" cy="162" r="6"/><circle cx="406" cy="162" r="5"/><circle cx="378" cy="162" r="4"/>
+      <circle cx="434" cy="190" r="5"/><circle cx="406" cy="190" r="4"/>
+    </g>
+
+    <!-- white sticker edge behind the duck -->
+    <g fill="#FFFFFF" stroke="#FFFFFF" stroke-width="34" stroke-linejoin="round" stroke-linecap="round">
+      <ellipse cx="226" cy="492" rx="176" ry="118"/>
+      <path d="M206 326 H284 V337.1 C282 354 288 370 300 384.9 V392 H190 V376.5 C202 366 208 352 206 336.3 Z"/>
+      <circle cx="246" cy="236" r="108"/>
+      <path d="M332 236 C360 226 398 228 424 238 C440 244 440 270 424 276 C398 286 360 288 332 284 Z"/>
+      <path d="M190 214 C160 158 204 120 262 122" fill="none" stroke-width="54"/>
+    </g>
+
+    <g stroke="#1B1340" stroke-width="12" stroke-linejoin="round" stroke-linecap="round">
+      <!-- body, head and the neck that joins them -->
+      <ellipse cx="226" cy="492" rx="176" ry="118" fill="#FFD60A"/>
+      <circle cx="246" cy="236" r="108" fill="#FFD60A"/>
+      <path d="M206 326 H284 V337.1 C282 354 288 370 300 384.9 V392 H190 V376.5 C202 366 208 352 206 336.3 Z" fill="#FFD60A" stroke="none"/>
+      <path d="M206 336.3 C208 352 202 366 190 376.5 M284 337.1 C282 354 288 370 300 384.9" fill="none"/>
+
+      <!-- bill -->
+      <path d="M332 236 C360 226 398 228 424 238 C440 244 440 270 424 276 C398 286 360 288 332 284 Z" fill="#FF7A00"/>
+      <path d="M344 264 C372 270 404 270 430 261" fill="none" stroke-width="8"/>
+      <ellipse cx="398" cy="245" rx="4.5" ry="3" fill="#1B1340" stroke="none"/>
+
+      <!-- eye and cheek -->
+      <circle cx="294" cy="206" r="16" fill="#1B1340" stroke="none"/>
+      <circle cx="299.5" cy="200" r="5.5" fill="#FFFFFF" stroke="none"/>
+      <circle cx="290" cy="258" r="12" fill="#FF5D8F" stroke="none" opacity="0.85"/>
+
+      <!-- headphones: band over the crown, cup on the ear -->
+      <path d="M190 214 C160 158 204 120 262 122" fill="none" stroke-width="32"/>
+      <path d="M190 214 C160 158 204 120 262 122" fill="none" stroke="#00E5FF" stroke-width="14"/>
+      <circle cx="208" cy="246" r="46" fill="#00E5FF"/>
+      <circle cx="208" cy="246" r="20" fill="#FF2E93" stroke-width="8"/>
+    </g>
+  </g>
+</svg>

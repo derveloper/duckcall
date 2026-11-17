@@ -1,5 +1,5 @@
 //! Runs the real binary in a sandbox. `HOME` points at a scratch directory with fixture stores,
-//! and the only `PATH` entry holds stand-ins for launchctl, pgrep, pkill, open and osascript,
+//! and the only `PATH` entry holds stand-ins for launchctl, pgrep, pkill, open, osascript and codesign,
 //! so nothing here touches the real apps, the real service or the real volume.
 
 use rusqlite::Connection;
@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use std::fs;
 use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Output, Stdio};
 use std::time::{Duration, Instant};
 
@@ -37,6 +37,7 @@ impl Sandbox {
         stand_in("pgrep", r#"[ -e "$SANDBOX/running/$2" ]"#.to_string());
         stand_in("pkill", format!("{note}\n/bin/rm -f \"$SANDBOX/running/$2\"")); // the app quits at once
         stand_in("open", note.to_string());
+        stand_in("codesign", note.to_string());
         // Like the real osascript, only the script that asks for the volume prints something.
         let answer = r#"case "$*" in *"get volume settings"*) read -r volume < "$SANDBOX/volume"; echo "$volume" ;; esac"#;
         stand_in("osascript", format!("{note}\n{answer}"));
@@ -51,6 +52,11 @@ impl Sandbox {
 
     fn agent(&self) -> PathBuf {
         self.home().join("Library/LaunchAgents/io.github.lansidev.duckcall.plist")
+    }
+
+    /// The app bundle the service runs from.
+    fn bundle(&self) -> PathBuf {
+        self.home().join("Library/Application Support/duckcall/Duckcall.app")
     }
 
     fn store(&self, path: &str) -> PathBuf {
@@ -205,6 +211,13 @@ fn service() -> String {
     format!("gui/{}/io.github.lansidev.duckcall", unsafe { libc::getuid() })
 }
 
+/// One value of a property list, read by the real plutil.
+fn plist_value(file: &Path, key: &str) -> String {
+    let output = Command::new("/usr/bin/plutil").args(["-extract", key, "raw", "-o", "-"]).arg(file).output().unwrap();
+    assert!(output.status.success(), "{key} in {}: {}", file.display(), String::from_utf8_lossy(&output.stderr));
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
 // --- install -------------------------------------------------------------------------------------
 
 #[test]
@@ -315,8 +328,7 @@ fn install_hands_the_ducking_level_to_the_service() {
     let output = sandbox.command().arg("install").env("DUCK_VOLUME", "12").output().unwrap();
 
     assert!(output.status.success(), "{output:?}");
-    let agent = fs::read_to_string(sandbox.agent()).unwrap();
-    assert!(agent.contains("<key>DUCK_VOLUME</key>\n\t\t<string>12</string>"), "{agent}");
+    assert_eq!(plist_value(&sandbox.agent(), "EnvironmentVariables.DUCK_VOLUME"), "12");
 }
 
 #[test]
@@ -331,6 +343,29 @@ fn install_refuses_a_ducking_level_that_is_no_volume() {
     assert!(!sandbox.agent().exists());
 }
 
+#[test]
+fn install_runs_the_service_from_an_app_bundle_with_a_name_and_an_icon() {
+    let sandbox = Sandbox::new("bundle");
+    sandbox.handy("option+space");
+
+    let output = sandbox.duckcall(&["install"]);
+
+    assert!(output.status.success(), "{output:?}");
+    let contents = sandbox.bundle().join("Contents");
+    let info = contents.join("Info.plist");
+    assert_eq!(plist_value(&info, "CFBundleName"), "Duckcall"); // what System Settings lists
+    // The names in Info.plist must lead to the files that are there.
+    let executable = contents.join("MacOS").join(plist_value(&info, "CFBundleExecutable"));
+    assert!(fs::read(&executable).unwrap() == fs::read(env!("CARGO_BIN_EXE_duckcall")).unwrap(), "not this duckcall");
+    let icon = contents.join("Resources").join(plist_value(&info, "CFBundleIconFile") + ".icns");
+    let logo = concat!(env!("CARGO_MANIFEST_DIR"), "/assets/duckcall.icns");
+    assert!(fs::read(&icon).unwrap() == fs::read(logo).unwrap(), "not the logo");
+    // macOS names the background item after the app that contains the service's executable.
+    assert_eq!(plist_value(&sandbox.agent(), "ProgramArguments.0"), executable.to_string_lossy());
+    let signed = format!("codesign --force --sign - {}", sandbox.bundle().display());
+    assert!(sandbox.calls().contains(&signed), "{:?}", sandbox.calls());
+}
+
 // --- uninstall -----------------------------------------------------------------------------------
 
 #[test]
@@ -343,6 +378,7 @@ fn uninstall_removes_the_service_and_gives_handy_its_keyboard_back() {
 
     assert!(output.status.success(), "{output:?}");
     assert!(!sandbox.agent().exists());
+    assert!(!sandbox.bundle().parent().unwrap().exists(), "the app bundle is still there");
     assert!(sandbox.calls().contains(&format!("launchctl bootout {}", service())));
     assert_eq!(sandbox.handy_setting("keyboard_implementation"), "handy_keys");
     assert_eq!(sandbox.fluxer_mutes(), 1); // the shortcuts stay
