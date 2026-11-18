@@ -37,7 +37,7 @@ Requirements:
 
 - Handy, Fluxer and Discord must each have been started once. A call app that is missing is skipped.
 - Writing to `/Applications` needs an administrator account. `DUCKCALL_APPLICATIONS=~/Applications duckcall install` installs the app for you alone.
-- Fluxer and Discord need the macOS "Input Monitoring" permission; without it they only see keys in their own window.
+- Fluxer and Discord need the macOS "Input Monitoring" permission (System Settings → Privacy & Security); without it they only see keys in their own window. They pick it up after a restart.
 - In both apps "push to mute" only works in voice-activity mode, not with push-to-talk.
 
 ## Configure and remove
@@ -62,6 +62,7 @@ After updating duckcall, run `duckcall install` again: Duckcall.app carries its 
   `install` reports an error or the app ignores the entry.
 - If Handy changes the wording of its log lines (`TranscribeAction::start called` / `stop called`),
   the ducking stops working.
+- Slack huddles are not supported: Slack has no push to mute and no custom shortcuts, only a mute toggle on ⌘⇧Space.
 
 ## Development
 

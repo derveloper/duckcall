@@ -86,6 +86,10 @@ you do not understand, and fail with a message instead of guessing when somethin
   (`DISCORD_OPTION_SPACE` in `macos.rs`). Other systems use other key codes and another environment value.
 - Push to mute only takes effect in voice-activity mode, in both apps.
 - Only Handy's default shortcut `option+space` is translated into the call apps' formats.
+- Both call apps need the macOS "Input Monitoring" permission to see keys outside their own window, and they only
+  pick it up after a restart. Accessibility is not needed (checked with Discord 0.0.422).
+- Discord reads the keyboard through IOHIDManager (`discord_utils.node`). Synthetic key events (`CGEvent`) should
+  never reach it, so plan on a real key press when checking its push to mute. Handy does react to synthetic events.
 
 ## Tests
 
@@ -121,6 +125,24 @@ Every change comes with a test for the behaviour it changes.
   with the agent in its container, not as a `legacy agent` under `Unknown Developer`.
 - `HANDY_LOG=<file> duckcall run` follows another file; appending the trigger lines to it exercises `run`
   without Handy. Outside the sandbox this changes the real output volume.
+
+## Slack huddles: looked into, not built
+
+Checked with Slack 4.53 in a live huddle:
+
+- Slack has no push to mute and no custom shortcuts. Its only handle is a mute toggle on Cmd+Shift+Space, which
+  Slack's shell registers as a system-wide shortcut.
+- A synthetic Cmd+Shift+Space toggles the mute from any app, but the huddle window comes to the front. The
+  frontmost app stays the same, so a check of the frontmost app misses that.
+- A toggle needs the current state. The microphone button in the huddle window has it (a class starting with
+  `buttonToggledOn` while unmuted) and is readable through the Accessibility API, but only while that window is on
+  the current desktop.
+- Pressing that button through the Accessibility API toggles the mute too. The user saw it switch, while the class
+  read back unchanged for 2.6 s: do not rely on reading the state right after a press.
+- A running huddle is visible without Accessibility: Slack's helper process captures audio (Core Audio,
+  `kAudioProcessPropertyIsRunningInput`), also while muted.
+- Building this takes the Accessibility permission for Duckcall.app and remote control of a UI that changes with
+  Slack updates.
 
 ## Conventions
 
